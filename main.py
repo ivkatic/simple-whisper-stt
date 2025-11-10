@@ -66,6 +66,22 @@ def is_cuda_available():
         # If ctranslate2 check fails, assume CPU (faster-whisper will handle CUDA errors gracefully)
         return False
 
+def validate_model_name(model_name: str):
+    """Validate model name to prevent arbitrary file loading."""
+    # Valid Whisper model names
+    VALID_MODELS = {
+        "tiny", "tiny.en",
+        "base", "base.en",
+        "small", "small.en",
+        "medium", "medium.en",
+        "large", "large-v1", "large-v2", "large-v3"
+    }
+    if model_name not in VALID_MODELS:
+        raise ValueError(
+            f"Invalid model name: '{model_name}'. "
+            f"Valid models: {', '.join(sorted(VALID_MODELS))}"
+        )
+
 # ---------------- Defaults (can be overridden by CLI) ----------------
 SAMPLE_RATE = 16000
 CHANNELS = 1
@@ -79,6 +95,7 @@ SILENCE_THRESH = 1e-4
 # --- Hotkey state tracking for "hold Ctrl + Windows" ---
 _ctrl_down = False
 _win_down = False
+_key_state_lock = threading.Lock()  # Thread safety for key state
 recording_q = queue.Queue()
 is_recording = threading.Event()
 stream = None
@@ -86,6 +103,7 @@ model = None
 transcript_history = deque(maxlen=5)
 history_lock = threading.Lock()
 tray_icon = None
+keyboard_hook = None  # Store hook reference for cleanup
 
 def init_audio():
     sd.default.samplerate = SAMPLE_RATE
@@ -237,12 +255,16 @@ def on_key_event(e, args):
     # Debug: uncomment to see what keys are detected
     # print(f"Key: {name} ({e.event_type})", file=sys.stderr)
     
-    if name in ("ctrl", "left ctrl", "right ctrl"):
-        _ctrl_down = e.event_type == "down"
-    elif name in WIN_NAMES:
-        _win_down = e.event_type == "down"
-
-    combo = _ctrl_down and _win_down
+    # Thread-safe key state updates
+    with _key_state_lock:
+        if name in ("ctrl", "left ctrl", "right ctrl"):
+            _ctrl_down = e.event_type == "down"
+        elif name in WIN_NAMES:
+            _win_down = e.event_type == "down"
+        
+        combo = _ctrl_down and _win_down
+    
+    # Recording control (outside lock to avoid holding it during I/O)
     if combo and not is_recording.is_set():
         # print("[Recording started]", file=sys.stderr)
         begin_recording()
@@ -279,11 +301,28 @@ def get_menu():
         return pystray.Menu(*items)
 
 def stop_app():
-    global tray_icon
+    """Properly cleanup resources and exit gracefully."""
+    global tray_icon, keyboard_hook
+    
+    # Unhook keyboard to prevent resource leak
+    if keyboard_hook is not None:
+        try:
+            keyboard.unhook(keyboard_hook)
+        except Exception:
+            pass
+    
+    # Stop tray icon
     if tray_icon:
-        tray_icon.stop()
+        try:
+            tray_icon.stop()
+        except Exception:
+            pass
+    
+    # Stop audio stream
     stop_stream()
-    os._exit(0)
+    
+    # Use sys.exit() instead of os._exit() for proper cleanup
+    sys.exit(0)
 
 def main():
     parser = argparse.ArgumentParser(description=f"Whisper Push-To-Talk v{__version__}")
@@ -300,7 +339,14 @@ def main():
     if args.debug:
         warnings.filterwarnings("default")
     
-    global tray_icon
+    global tray_icon, keyboard_hook
+    
+    # Validate model name for security
+    try:
+        validate_model_name(args.model)
+    except ValueError as e:
+        print(f"[Error] {e}", file=sys.stderr)
+        sys.exit(1)
 
     # Resolve device
     if args.cpu:
@@ -332,7 +378,8 @@ def main():
         sys.exit(1)
 
     # Low-level keyboard hook so we can detect both key down/up events
-    keyboard.hook(lambda e: on_key_event(e, args))
+    # Store the hook reference for proper cleanup
+    keyboard_hook = keyboard.hook(lambda e: on_key_event(e, args))
 
     # Create and run system tray icon in separate thread
     icon_image = create_tray_icon()
@@ -347,7 +394,17 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
-        tray_icon.stop()
+        # Proper resource cleanup
+        if keyboard_hook is not None:
+            try:
+                keyboard.unhook(keyboard_hook)
+            except Exception:
+                pass
+        if tray_icon:
+            try:
+                tray_icon.stop()
+            except Exception:
+                pass
         stop_stream()
         print("Goodbye.")
 
