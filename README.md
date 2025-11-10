@@ -1,6 +1,6 @@
 # Whisper Speech-To-Text
 
-A simple speech-to-text application using faster-whisper. Hold **CTRL + WINDOWS** (or **CTRL + CMD** on Mac) to record, release to transcribe instantly. Text is automatically pasted where your cursor is (paste mode) or simply copied to clipboard (clipboard mode).
+A simple offline speech-to-text application using faster-whisper. Runs completely locally. Hold **CTRL + WINDOWS** (or **CTRL + CMD** on Mac) to record, release to transcribe instantly. Text is automatically pasted where your cursor is (paste mode) or simply copied to clipboard (clipboard mode).
 
 **Version:** 1.0.0
 
@@ -14,6 +14,7 @@ A simple speech-to-text application using faster-whisper. Hold **CTRL + WINDOWS*
 - Two output modes:
   - **Paste mode** (default): Auto-paste transcribed text where your cursor is
   - **Clipboard mode**: Copy to clipboard only, no auto-paste
+- **100% offline/local** - No internet connection required, all processing happens on your device
 
 ## Requirements
 
