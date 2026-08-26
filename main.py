@@ -353,6 +353,12 @@ def main():
         print(f"[Error] {e}", file=sys.stderr)
         sys.exit(1)
 
+    # The `keyboard` package needs a global hook; on Linux/macOS that requires root.
+    if sys.platform != "win32" and hasattr(os, "geteuid") and os.geteuid() != 0:
+        print("[Error] Global keyboard hooks require root on Linux/macOS. "
+              "Re-run with sudo (e.g. `sudo python main.py`).", file=sys.stderr)
+        sys.exit(1)
+
     # Resolve device
     if args.cpu:
         device = "cpu"
@@ -390,36 +396,59 @@ def main():
     # Store the hook reference for proper cleanup
     keyboard_hook = keyboard.hook(lambda e: on_key_event(e, args))
 
-    # Create and run system tray icon in separate thread
+    # System tray icon. On macOS the Cocoa event loop must run on the main
+    # thread, so pystray owns the main thread there and we block on keyboard
+    # events from a helper thread instead. Elsewhere the tray runs in its own
+    # thread and the main thread blocks.
     icon_image = create_tray_icon()
     tray_icon = pystray.Icon("whisper_ptt", icon_image, "Whisper PTT", menu=get_menu())
-    tray_thread = threading.Thread(target=tray_icon.run, daemon=False)
-    tray_thread.start()
-    
+
     print(f"[Ready] Model loaded. Hold {hotkey} to record.")
-    
-    try:
-        # Block until the tray "Exit" item (or another thread) requests shutdown.
-        # Keyboard events are delivered on the hook's own thread meanwhile.
-        while not shutdown_event.wait(0.5):
-            pass
-    except KeyboardInterrupt:
-        pass
-    finally:
-        # Proper resource cleanup
+
+    def cleanup():
         transcribe_q.put(None)  # tell the worker to stop
         if keyboard_hook is not None:
             try:
                 keyboard.unhook(keyboard_hook)
             except Exception:
                 pass
-        if tray_icon:
-            try:
-                tray_icon.stop()
-            except Exception:
-                pass
         stop_stream()
         print("Goodbye.")
+
+    def stop_tray():
+        try:
+            tray_icon.stop()
+        except Exception:
+            pass
+
+    if sys.platform == "darwin":
+        # Tray owns the main thread. A helper waits for the shutdown request
+        # (tray Exit sets shutdown_event) and stops the tray, which returns
+        # control to main for cleanup.
+        def _wait_for_shutdown():
+            shutdown_event.wait()
+            stop_tray()
+        threading.Thread(target=_wait_for_shutdown, daemon=True).start()
+        try:
+            tray_icon.run()  # blocks until tray_icon.stop()
+        except KeyboardInterrupt:
+            pass
+        finally:
+            shutdown_event.set()
+            cleanup()
+    else:
+        tray_thread = threading.Thread(target=tray_icon.run, daemon=False)
+        tray_thread.start()
+        try:
+            # Block until the tray "Exit" item (or another thread) requests shutdown.
+            # Keyboard events are delivered on the hook's own thread meanwhile.
+            while not shutdown_event.wait(0.5):
+                pass
+        except KeyboardInterrupt:
+            pass
+        finally:
+            stop_tray()
+            cleanup()
 
 if __name__ == "__main__":
     main()
