@@ -85,13 +85,12 @@ def validate_model_name(model_name: str):
             f"Valid models: {', '.join(sorted(VALID_MODELS))}"
         )
 
-# ---------------- Defaults (can be overridden by CLI) ----------------
+# ---------------- Defaults (overridable via CLI flags) ----------------
 SAMPLE_RATE = 16000
 CHANNELS = 1
-KEEP_TRANSCRIPT_IN_CLIPBOARD = True
-MIN_DURATION_SEC = 0.25
-VAD_TRIM = True
-SILENCE_THRESH = 1e-4
+DEFAULT_MIN_DURATION_SEC = 0.25   # --min-duration
+DEFAULT_SILENCE_THRESH = 1e-4     # --silence-thresh
+DEFAULT_BEAM_SIZE = 5             # --beam-size
 # ---------------------------------------------------------------------
 
 
@@ -155,7 +154,7 @@ def drain_queue():
         audio = np.mean(audio, axis=1)
     return audio.astype(np.float32)
 
-def trim_silence(audio, thresh=SILENCE_THRESH):
+def trim_silence(audio, thresh=DEFAULT_SILENCE_THRESH):
     if audio is None or len(audio) == 0:
         return audio
     amp = np.abs(audio)
@@ -213,13 +212,13 @@ def make_model(device: str, model_name: str, cache_dir: Path):
         # CPU-friendly quantization
         return WhisperModel(model_name, device="cpu", compute_type="int8", download_root=str(cache_dir))
 
-def transcribe_array(m, audio, language):
+def transcribe_array(m, audio, language, beam_size=DEFAULT_BEAM_SIZE):
     # Normalize audio
     audio = audio / (np.max(np.abs(audio)) + 1e-8)
     
     segments, info = m.transcribe(
         audio,
-        beam_size=5,  # faster-whisper default; 10 is ~2x slower on CPU with no real gain on short clips
+        beam_size=beam_size,
         vad_filter=False,  # Disable since we're doing manual VAD
         language=language,
         condition_on_previous_text=False,  # Better for short clips
@@ -227,7 +226,7 @@ def transcribe_array(m, audio, language):
     )
     return "".join(seg.text for seg in segments).strip()
 
-def output_text(text, mode: str):
+def output_text(text, mode: str, restore_clipboard: bool = False):
     if not text:
         return
     
@@ -249,7 +248,8 @@ def output_text(text, mode: str):
     if mode == 'paste':
         time.sleep(0.03)  # tiny delay helps some UIs
         pyautogui.hotkey('ctrl', 'v')
-        if not KEEP_TRANSCRIPT_IN_CLIPBOARD and prev_clip is not None:
+        if restore_clipboard and prev_clip is not None:
+            time.sleep(0.05)  # give the target app time to read the clipboard
             pyperclip.copy(prev_clip)
 
 def begin_recording():
@@ -258,7 +258,7 @@ def begin_recording():
     drain_queue()           # clear any stale audio
     is_recording.set()
 
-def end_recording(lang, mode):
+def end_recording(settings):
     """Stop recording and queue the captured audio for transcription.
 
     Runs on the keyboard hook thread, so it must return quickly: no
@@ -267,30 +267,30 @@ def end_recording(lang, mode):
     if not is_recording.is_set():
         return
     is_recording.clear()
-    transcribe_q.put((lang, mode))
+    transcribe_q.put(settings)
 
 def transcribe_worker():
     """Drain recordings and transcribe them one at a time."""
     while True:
-        job = transcribe_q.get()
-        if job is None:  # shutdown sentinel
+        settings = transcribe_q.get()
+        if settings is None:  # shutdown sentinel
             break
-        lang, mode = job
+        min_samples = int(SAMPLE_RATE * settings.min_duration)
         try:
             time.sleep(0.05)        # let the audio callback flush its last block
             audio = drain_queue()
-            if audio is None or len(audio) < int(SAMPLE_RATE * MIN_DURATION_SEC):
+            if audio is None or len(audio) < min_samples:
                 continue
-            if VAD_TRIM:
-                audio = trim_silence(audio)
-                if audio is None or len(audio) < int(SAMPLE_RATE * MIN_DURATION_SEC):
+            if not settings.no_trim:
+                audio = trim_silence(audio, settings.silence_thresh)
+                if audio is None or len(audio) < min_samples:
                     continue
             try:
-                text = transcribe_array(model, audio, lang)
+                text = transcribe_array(model, audio, settings.lang, settings.beam_size)
             except Exception as ex:
                 print(f"[Transcribe error] {ex}", file=sys.stderr)
                 continue
-            output_text(text, mode)
+            output_text(text, settings.mode, settings.restore_clipboard)
         finally:
             transcribe_q.task_done()
 
@@ -322,7 +322,7 @@ def on_key_event(e, args):
         begin_recording()
     elif not combo and is_recording.is_set():
         print("[Recording stopped, transcribing...]", file=sys.stderr)
-        end_recording(args.lang, args.mode)
+        end_recording(args)
 
 def create_tray_icon():
     # Create simple microphone icon
@@ -369,9 +369,21 @@ def main():
     parser.add_argument("--lang", default=None, help='Force language like "en" or "hr" (default: auto)')
     parser.add_argument("--model-dir", default=None,
                         help=f"Where to store/load models (default: ${MODEL_DIR_ENV}, ./hf_cache if present, else per-user data dir)")
+    parser.add_argument("--min-duration", type=float, default=DEFAULT_MIN_DURATION_SEC, metavar="SEC",
+                        help=f"Ignore recordings shorter than this (default: {DEFAULT_MIN_DURATION_SEC})")
+    parser.add_argument("--no-trim", action="store_true",
+                        help="Don't trim leading/trailing silence before transcribing")
+    parser.add_argument("--silence-thresh", type=float, default=DEFAULT_SILENCE_THRESH, metavar="AMP",
+                        help=f"Amplitude below which audio counts as silence for trimming (default: {DEFAULT_SILENCE_THRESH})")
+    parser.add_argument("--beam-size", type=int, default=DEFAULT_BEAM_SIZE, metavar="N",
+                        help=f"Whisper beam size; higher is slower (default: {DEFAULT_BEAM_SIZE})")
+    parser.add_argument("--restore-clipboard", action="store_true",
+                        help="In paste mode, put the previous clipboard content back after pasting")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument("--debug", action="store_true", help="Show warnings and debug output")
     args = parser.parse_args()
+    if args.min_duration < 0 or args.silence_thresh < 0 or args.beam_size < 1:
+        parser.error("--min-duration and --silence-thresh must be >= 0, --beam-size >= 1")
     
     # Re-enable warnings if debug mode is enabled
     if args.debug:

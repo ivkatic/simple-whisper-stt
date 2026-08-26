@@ -68,6 +68,11 @@ python main.py --lang en                # Force English
 - `--mode <paste|clipboard>` - Output behavior (default: paste)
 - `--lang <code>` - Force language code like "en" or "hr" (default: auto-detect)
 - `--model-dir <path>` - Where models are downloaded/loaded (see below)
+- `--min-duration <sec>` - Ignore recordings shorter than this (default: 0.25)
+- `--no-trim` - Don't trim leading/trailing silence before transcribing
+- `--silence-thresh <amp>` - Amplitude treated as silence when trimming (default: 0.0001)
+- `--beam-size <n>` - Whisper beam size, higher is slower (default: 5)
+- `--restore-clipboard` - In paste mode, restore the previous clipboard content after pasting
 - `--version` - Show version number and exit
 - `--debug` - Show warnings (warnings are suppressed by default)
 
