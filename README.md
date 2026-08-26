@@ -125,6 +125,18 @@ Everything printed to the console is also written to a rotating log file (1 MB x
 4. Text is automatically pasted or copied to clipboard
 5. Access recent transcripts from the system tray icon
 
+## Tray menu
+
+Left or right click the tray icon (left click opens the menu on Windows; macOS/Linux use their own tray conventions). The tooltip and icon reflect the state: a red dot shows while recording.
+
+- Status line: `Ready | small on cpu | paste` (Ready / Recording... / Transcribing...)
+- **Start recording** / **Stop recording** - toggle a recording without holding the hotkey. A recording started here is only stopped here, the hotkey does not end it.
+- **Copy last transcript** - puts the most recent transcript on the clipboard again
+- Last 5 transcripts inline, click one to copy it; **Older** submenu holds up to 20 more
+- **Output** - switch between pasting into the active window and clipboard only, takes effect immediately
+- **Open log file** / **Open models folder**
+- About (opens devexus.net) and **Exit**
+
 ## Changing the Hotkey
 
 To customize the hotkey combination, edit these lines in `main.py`:
