@@ -19,7 +19,7 @@ A simple offline speech-to-text application using faster-whisper. Runs completel
 ## Requirements
 
 - Windows 10+ / macOS / Linux
-- Python 3.8+ (tested up to 3.13)
+- Python 3.9+ (tested on 3.13)
 - CUDA-capable GPU (optional, for faster processing)
 - Root/sudo access on Linux/Mac (the `keyboard` package installs a global hook; the app exits with an error if not root)
 - On macOS the system tray runs on the main thread (Cocoa requirement); you may also need to grant Accessibility permission to your terminal for the hook and auto-paste to work
