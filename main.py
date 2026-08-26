@@ -105,6 +105,9 @@ history_lock = threading.Lock()
 tray_icon = None
 keyboard_hook = None  # Store hook reference for cleanup
 shutdown_event = threading.Event()  # Set by any thread to request a clean exit
+# Transcription jobs are handed off to a worker so the keyboard hook thread
+# is never blocked by a multi-second Whisper run.
+transcribe_q = queue.Queue()
 
 def init_audio():
     sd.default.samplerate = SAMPLE_RATE
@@ -224,24 +227,41 @@ def begin_recording():
     drain_queue()           # clear any stale audio
     is_recording.set()
 
-def end_recording_and_transcribe(lang, mode):
+def end_recording(lang, mode):
+    """Stop recording and queue the captured audio for transcription.
+
+    Runs on the keyboard hook thread, so it must return quickly: no
+    transcription happens here, only a hand-off to the worker.
+    """
     if not is_recording.is_set():
         return
     is_recording.clear()
-    time.sleep(0.05)        # let callback flush
-    audio = drain_queue()
-    if audio is None or len(audio) < int(SAMPLE_RATE * MIN_DURATION_SEC):
-        return
-    if VAD_TRIM:
-        audio = trim_silence(audio)
-        if audio is None or len(audio) < int(SAMPLE_RATE * MIN_DURATION_SEC):
-            return
-    try:
-        text = transcribe_array(model, audio, lang)
-    except Exception as ex:
-        print(f"[Transcribe error] {ex}", file=sys.stderr)
-        return
-    output_text(text, mode)
+    transcribe_q.put((lang, mode))
+
+def transcribe_worker():
+    """Drain recordings and transcribe them one at a time."""
+    while True:
+        job = transcribe_q.get()
+        if job is None:  # shutdown sentinel
+            break
+        lang, mode = job
+        try:
+            time.sleep(0.05)        # let the audio callback flush its last block
+            audio = drain_queue()
+            if audio is None or len(audio) < int(SAMPLE_RATE * MIN_DURATION_SEC):
+                continue
+            if VAD_TRIM:
+                audio = trim_silence(audio)
+                if audio is None or len(audio) < int(SAMPLE_RATE * MIN_DURATION_SEC):
+                    continue
+            try:
+                text = transcribe_array(model, audio, lang)
+            except Exception as ex:
+                print(f"[Transcribe error] {ex}", file=sys.stderr)
+                continue
+            output_text(text, mode)
+        finally:
+            transcribe_q.task_done()
 
 # --- Keyboard handling for hold combo ---
 # On Mac, use "cmd" or "command" instead of "windows"
@@ -271,7 +291,7 @@ def on_key_event(e, args):
         begin_recording()
     elif not combo and is_recording.is_set():
         print("[Recording stopped, transcribing...]", file=sys.stderr)
-        end_recording_and_transcribe(args.lang, args.mode)
+        end_recording(args.lang, args.mode)
 
 def create_tray_icon():
     # Create simple microphone icon
@@ -362,6 +382,10 @@ def main():
         stop_stream()
         sys.exit(1)
 
+    # Worker that performs transcription off the keyboard hook thread
+    worker = threading.Thread(target=transcribe_worker, name="transcribe", daemon=True)
+    worker.start()
+
     # Low-level keyboard hook so we can detect both key down/up events
     # Store the hook reference for proper cleanup
     keyboard_hook = keyboard.hook(lambda e: on_key_event(e, args))
@@ -383,6 +407,7 @@ def main():
         pass
     finally:
         # Proper resource cleanup
+        transcribe_q.put(None)  # tell the worker to stop
         if keyboard_hook is not None:
             try:
                 keyboard.unhook(keyboard_hook)
