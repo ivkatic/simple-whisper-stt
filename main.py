@@ -104,6 +104,7 @@ transcript_history = deque(maxlen=5)
 history_lock = threading.Lock()
 tray_icon = None
 keyboard_hook = None  # Store hook reference for cleanup
+shutdown_event = threading.Event()  # Set by any thread to request a clean exit
 
 def init_audio():
     sd.default.samplerate = SAMPLE_RATE
@@ -301,28 +302,12 @@ def get_menu():
         return pystray.Menu(*items)
 
 def stop_app():
-    """Properly cleanup resources and exit gracefully."""
-    global tray_icon, keyboard_hook
-    
-    # Unhook keyboard to prevent resource leak
-    if keyboard_hook is not None:
-        try:
-            keyboard.unhook(keyboard_hook)
-        except Exception:
-            pass
-    
-    # Stop tray icon
-    if tray_icon:
-        try:
-            tray_icon.stop()
-        except Exception:
-            pass
-    
-    # Stop audio stream
-    stop_stream()
-    
-    # Use sys.exit() instead of os._exit() for proper cleanup
-    sys.exit(0)
+    """Request a clean shutdown.
+
+    Called from the tray thread. Raising SystemExit here would only kill the
+    tray thread, so instead we signal the main thread, which owns cleanup.
+    """
+    shutdown_event.set()
 
 def main():
     parser = argparse.ArgumentParser(description=f"Whisper Push-To-Talk v{__version__}")
@@ -390,7 +375,10 @@ def main():
     print(f"[Ready] Model loaded. Hold {hotkey} to record.")
     
     try:
-        keyboard.wait()  # Block on keyboard events
+        # Block until the tray "Exit" item (or another thread) requests shutdown.
+        # Keyboard events are delivered on the hook's own thread meanwhile.
+        while not shutdown_event.wait(0.5):
+            pass
     except KeyboardInterrupt:
         pass
     finally:
