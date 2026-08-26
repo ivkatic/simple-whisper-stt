@@ -18,7 +18,8 @@ def _add_nvidia_bins_to_path():
         return
     # Ask Python where site-packages is instead of guessing the venv layout
     # (the old sys.executable-relative guess broke for non-venv installs).
-    sp = Path(sysconfig.get_paths()["purelib"])
+    # A PyInstaller build ships the wheels (if any) under _MEIPASS instead.
+    sp = Path(getattr(sys, "_MEIPASS", None) or sysconfig.get_paths()["purelib"])
     cand = [
         sp / "nvidia" / "cudnn" / "bin",
         sp / "nvidia" / "cublas" / "bin",
@@ -72,14 +73,35 @@ def setup_logging(debug: bool):
     for noisy in ("PIL", "urllib3", "huggingface_hub", "filelock"):
         logging.getLogger(noisy).setLevel(logging.INFO)
 
+def cuda_runtime_libs_present():
+    """Check the CUDA runtime DLLs CTranslate2 needs at inference time can be loaded.
+
+    get_cuda_device_count() only asks the driver, so it says yes on any machine
+    with an NVIDIA GPU even when cuBLAS/cuDNN aren't installed (e.g. the CPU-only
+    exe). Those libs load lazily, so without this check the failure only shows
+    up on the first transcription.
+    """
+    if sys.platform != "win32":
+        return True  # Linux/mac: let CTranslate2 report its own errors
+    import ctypes
+    for name in ("cublas64_12.dll", "cudnn64_9.dll"):
+        try:
+            ctypes.WinDLL(name)
+        except OSError:
+            log.debug("CUDA runtime library %s not found", name)
+            return False
+    return True
+
 def is_cuda_available():
     """Check if CUDA is available for faster-whisper (uses CTranslate2, not PyTorch)."""
     try:
         import ctranslate2
-        return ctranslate2.get_cuda_device_count() > 0
+        if ctranslate2.get_cuda_device_count() <= 0:
+            return False
     except (ImportError, RuntimeError, AttributeError):
         # If ctranslate2 check fails, assume CPU (faster-whisper will handle CUDA errors gracefully)
         return False
+    return cuda_runtime_libs_present()
 
 def validate_model_name(model_name: str):
     """Validate model name to prevent arbitrary file loading."""
@@ -213,9 +235,13 @@ def make_model(device: str, model_name: str, cache_dir: Path):
     cache_dir.mkdir(parents=True, exist_ok=True)
 
     if device == "cuda":
-        # Try CUDA first, fallback to CPU if it fails
+        # Try CUDA first, fallback to CPU if it fails. Run a tiny warm-up
+        # transcription: CUDA libs load lazily, so a missing DLL only shows up
+        # here, not in the constructor.
         try:
-            return WhisperModel(model_name, device="cuda", compute_type="float16", download_root=str(cache_dir))
+            m = WhisperModel(model_name, device="cuda", compute_type="float16", download_root=str(cache_dir))
+            list(m.transcribe(np.zeros(SAMPLE_RATE, dtype=np.float32), beam_size=1)[0])
+            return m
         except Exception:
             log.warning("CUDA failed, falling back to CPU", exc_info=log.isEnabledFor(logging.DEBUG))
             return WhisperModel(model_name, device="cpu", compute_type="int8", download_root=str(cache_dir))
