@@ -1,4 +1,6 @@
-# Whisper Speech-To-Text
+# Whisper STT
+
+**by [Devexus](https://devexus.net)**
 
 A simple offline speech-to-text application using faster-whisper. Runs completely locally. Hold **CTRL + WINDOWS** (or **CTRL + CMD** on Mac) to record, release to transcribe instantly. Text is automatically pasted where your cursor is (paste mode) or simply copied to clipboard (clipboard mode).
 
@@ -6,7 +8,7 @@ A simple offline speech-to-text application using faster-whisper. Runs completel
 
 ## Features
 
-- Push-to-talk recording (customizable hotkey)
+- Push-to-talk hotkey (hold to record, release to transcribe)
 - GPU (CUDA) and CPU support with auto-detection
 - Multiple Whisper models (tiny, base, small, medium, large-v3)
 - Auto or manual language selection
@@ -178,3 +180,6 @@ parser.add_argument("--mode", default="clipboard", help=...)  # Change from "pas
 
 **Note:** The first run will download the Whisper model (~500MB for small model), which may take time.
 
+---
+
+Built by [Devexus](https://devexus.net).

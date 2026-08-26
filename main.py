@@ -1,15 +1,8 @@
-# app.py
-# Whisper Push-To-Talk
-# Hold CTRL + WINDOWS (or CTRL + CMD on Mac) to record; release to transcribe -> clipboard (and paste if enabled).
-# Flags:
-#   --model <name>   e.g., tiny, base, small, medium, large-v3 (default: small)
-#   --cpu            force CPU (default: auto-detect GPU)
-#   --mode <paste|clipboard>  output behavior (default: paste)
-#   --lang <code>    force language, e.g. "en", "hr" (default: auto)
-# Example:
-#   python app.py --model base        (auto-detect GPU)
-#   python app.py --cpu --model small (force CPU)
-#   python app.py --mode clipboard
+# main.py
+# Whisper STT by Devexus (https://devexus.net)
+# Offline speech-to-text with a push-to-talk hotkey: hold CTRL + WINDOWS
+# (CTRL + CMD on Mac) to record, release to transcribe -> clipboard / paste.
+# Run `python main.py --help` for all flags.
 
 # ---- BEGIN: NVIDIA DLL PATH FIX (Windows only) ----
 import os, sys
@@ -55,12 +48,13 @@ import time
 from collections import deque
 from PIL import Image, ImageDraw
 import pystray
+import webbrowser
 
 from faster_whisper import WhisperModel
 from platformdirs import user_data_dir
 
 __version__ = "1.0.1"
-APP_NAME = "Whisper PTT"
+APP_NAME = "Whisper STT"
 APP_AUTHOR = "Devexus"
 APP_URL = "https://devexus.net"
 EXE_NAME = "whisper-stt-devexus"
@@ -341,8 +335,19 @@ def on_key_event(e, args):
         log.info("Transcribing...")
         end_recording(args)
 
+def resource_path(rel: str) -> Path:
+    """Path to a bundled asset, both from source and inside a PyInstaller build."""
+    base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+    return base / rel
+
 def create_tray_icon():
-    # Create simple microphone icon
+    logo = resource_path("assets/logo.png")
+    if logo.is_file():
+        try:
+            return Image.open(logo).convert("RGBA")
+        except Exception:
+            log.debug("could not load %s, using drawn icon", logo, exc_info=True)
+    # Fallback: simple drawn microphone
     img = Image.new('RGB', (64, 64), color='white')
     draw = ImageDraw.Draw(img)
     draw.ellipse([20, 35, 44, 55], fill='black')
@@ -366,6 +371,9 @@ def get_menu():
         else:
             items.append(pystray.MenuItem('No history yet', lambda _: None, enabled=False))
             items.append(pystray.Menu.SEPARATOR)
+        items.append(pystray.MenuItem(f"{APP_NAME} v{__version__} by {APP_AUTHOR}",
+                                      lambda _: webbrowser.open(APP_URL)))
+        items.append(pystray.Menu.SEPARATOR)
         items.append(pystray.MenuItem('Exit', lambda _: stop_app()))
         return pystray.Menu(*items)
 
@@ -396,7 +404,8 @@ def main():
                         help=f"Whisper beam size; higher is slower (default: {DEFAULT_BEAM_SIZE})")
     parser.add_argument("--restore-clipboard", action="store_true",
                         help="In paste mode, put the previous clipboard content back after pasting")
-    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
+    parser.add_argument("--version", action="version",
+                        version=f"%(prog)s {__version__} - {APP_NAME} by {APP_AUTHOR} ({APP_URL})")
     parser.add_argument("--debug", action="store_true", help="Show warnings and debug output")
     args = parser.parse_args()
     if args.min_duration < 0 or args.silence_thresh < 0 or args.beam_size < 1:
@@ -428,7 +437,7 @@ def main():
             log.info("CUDA not available, using CPU")
 
     hotkey = "CTRL + CMD" if sys.platform == "darwin" else "CTRL + WINDOWS"
-    log.info("%s v%s running.", APP_NAME, __version__)
+    log.info("%s v%s by %s (%s)", APP_NAME, __version__, APP_AUTHOR, APP_URL)
     log.info("- Hold %s to talk; release to transcribe.", hotkey)
     log.info("- Model: %s | Device: %s | Mode: %s | Lang: %s", args.model, device, args.mode, args.lang or "auto")
     model_dir = resolve_model_dir(args.model_dir)
@@ -463,7 +472,7 @@ def main():
     # events from a helper thread instead. Elsewhere the tray runs in its own
     # thread and the main thread blocks.
     icon_image = create_tray_icon()
-    tray_icon = pystray.Icon(EXE_NAME, icon_image, APP_NAME, menu=get_menu())
+    tray_icon = pystray.Icon(EXE_NAME, icon_image, f"{APP_NAME} - {APP_AUTHOR}", menu=get_menu())
 
     log.info("Ready. Hold %s to record.", hotkey)
 
