@@ -52,7 +52,7 @@ import pystray
 import webbrowser
 
 from faster_whisper import WhisperModel
-from platformdirs import user_data_dir
+from platformdirs import user_data_dir, user_log_dir
 
 __version__ = "1.0.2"
 APP_NAME = "Whisper STT"
@@ -62,11 +62,48 @@ EXE_NAME = "whisper-stt-devexus"
 
 log = logging.getLogger("whisper_stt")
 
+def attach_console():
+    """Frozen windowed exe: reuse the parent terminal's console if there is one.
+
+    PyInstaller builds with console=False give us no stdout/stderr at all
+    (both are None). Attaching to the parent process means running the exe
+    from cmd/PowerShell still shows output, while double-clicking it from
+    Explorer stays silent. If nothing can be attached, point the streams at
+    devnull so libraries that print (tqdm download bars) don't crash.
+    """
+    if sys.stdout is not None and sys.stderr is not None:
+        return
+    if sys.platform == "win32":
+        import ctypes
+        if ctypes.windll.kernel32.AttachConsole(-1):  # ATTACH_PARENT_PROCESS
+            try:
+                sys.stdout = open("CONOUT$", "w", encoding="utf-8", errors="replace")
+                sys.stderr = sys.stdout
+                return
+            except OSError:
+                pass
+    devnull = open(os.devnull, "w")
+    sys.stdout = sys.stdout or devnull
+    sys.stderr = sys.stderr or devnull
+
+def log_file_path() -> Path:
+    return Path(user_log_dir("WhisperSTT", APP_AUTHOR)) / "whisper-stt.log"
+
 def setup_logging(debug: bool):
-    """INFO to stdout by default; --debug adds DEBUG and re-enables warnings."""
+    """INFO to stdout plus a rotating log file; --debug adds DEBUG and re-enables warnings."""
+    from logging.handlers import RotatingFileHandler
     level = logging.DEBUG if debug else logging.INFO
     fmt = "%(asctime)s %(levelname)s %(message)s" if debug else "%(message)s"
-    logging.basicConfig(level=level, format=fmt, datefmt="%H:%M:%S", stream=sys.stdout)
+    handlers = [logging.StreamHandler(sys.stdout)]
+    try:
+        path = log_file_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fh = RotatingFileHandler(path, maxBytes=1_000_000, backupCount=3, encoding="utf-8")
+        fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s", "%Y-%m-%d %H:%M:%S"))
+        handlers.append(fh)
+    except OSError as ex:
+        print(f"Could not open log file: {ex}", file=sys.stderr)
+    logging.basicConfig(level=level, format=fmt, datefmt="%H:%M:%S", handlers=handlers)
     if debug:
         warnings.filterwarnings("default")
     # Keep --debug about this app, not library internals
@@ -91,6 +128,14 @@ def cuda_runtime_libs_present():
             log.debug("CUDA runtime library %s not found", name)
             return False
     return True
+
+def fatal(msg: str, exc_info=False):
+    """Log a startup error and exit. With no console (windowed exe) also show a message box."""
+    log.error("%s", msg, exc_info=exc_info)
+    if sys.platform == "win32" and getattr(sys, "frozen", False):
+        import ctypes
+        ctypes.windll.user32.MessageBoxW(None, f"{msg}\n\nLog: {log_file_path()}", APP_NAME, 0x10)  # MB_ICONERROR
+    sys.exit(1)
 
 def is_cuda_available():
     """Check if CUDA is available for faster-whisper (uses CTranslate2, not PyTorch)."""
@@ -412,6 +457,7 @@ def stop_app():
     shutdown_event.set()
 
 def main():
+    attach_console()
     parser = argparse.ArgumentParser(prog=EXE_NAME, description=f"{APP_NAME} v{__version__}")
     parser.add_argument("--model", default="small", help="Whisper model (tiny|base|small|medium|large-v3...)")
     parser.add_argument("--cpu", action="store_true", help="Force CPU usage (default: auto-detect GPU)")
@@ -445,14 +491,12 @@ def main():
     try:
         validate_model_name(args.model)
     except ValueError as e:
-        log.error("%s", e)
-        sys.exit(1)
+        fatal(str(e))
 
     # The `keyboard` package needs a global hook; on Linux/macOS that requires root.
     if sys.platform != "win32" and hasattr(os, "geteuid") and os.geteuid() != 0:
-        log.error("Global keyboard hooks require root on Linux/macOS. "
-                  "Re-run with sudo (e.g. `sudo python main.py`).")
-        sys.exit(1)
+        fatal("Global keyboard hooks require root on Linux/macOS. "
+              "Re-run with sudo (e.g. `sudo python main.py`).")
 
     # Resolve device
     if args.cpu:
@@ -468,22 +512,21 @@ def main():
     log.info("- Model: %s | Device: %s | Mode: %s | Lang: %s", args.model, device, args.mode, args.lang or "auto")
     model_dir = resolve_model_dir(args.model_dir)
     log.info("- Model dir: %s", model_dir)
+    log.info("- Log file: %s", log_file_path())
 
     try:
         init_audio()
         start_stream()
     except Exception as ex:
-        log.error("Audio error: %s", ex, exc_info=args.debug)
-        sys.exit(1)
+        fatal(f"Audio error: {ex}", exc_info=args.debug)
 
     try:
         log.info("Loading Whisper model, first run may take a bit...")
         global model
         model = make_model(device, args.model, model_dir)
     except Exception as ex:
-        log.error("Model load error: %s", ex, exc_info=args.debug)
         stop_stream()
-        sys.exit(1)
+        fatal(f"Model load error: {ex}", exc_info=args.debug)
 
     # Worker that performs transcription off the keyboard hook thread
     worker = threading.Thread(target=transcribe_worker, name="transcribe", daemon=True)
