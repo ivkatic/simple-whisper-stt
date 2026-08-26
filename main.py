@@ -13,6 +13,7 @@
 
 # ---- BEGIN: NVIDIA DLL PATH FIX (Windows only) ----
 import os, sys
+import sysconfig
 import warnings
 from pathlib import Path
 
@@ -22,8 +23,9 @@ warnings.filterwarnings("ignore")
 def _add_nvidia_bins_to_path():
     if sys.platform != "win32":
         return
-    # Find site-packages (works inside venv too)
-    sp = Path(sys.executable).parent.parent / "Lib" / "site-packages"
+    # Ask Python where site-packages is instead of guessing the venv layout
+    # (the old sys.executable-relative guess broke for non-venv installs).
+    sp = Path(sysconfig.get_paths()["purelib"])
     cand = [
         sp / "nvidia" / "cudnn" / "bin",
         sp / "nvidia" / "cublas" / "bin",
