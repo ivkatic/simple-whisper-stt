@@ -181,10 +181,16 @@ recording_q = queue.Queue()
 is_recording = threading.Event()
 stream = None
 model = None
-transcript_history = deque(maxlen=5)
+HISTORY_INLINE = 5   # newest transcripts shown directly in the tray menu
+HISTORY_MAX = 25     # older ones go to the History submenu
+transcript_history = deque(maxlen=HISTORY_MAX)
 history_lock = threading.Lock()
 tray_icon = None
 keyboard_hook = None  # Store hook reference for cleanup
+# Shared with the tray menu: current status text, resolved device and the
+# argparse namespace (so menu toggles like output mode take effect live).
+app_state = {"status": "Starting", "device": "cpu", "settings": None, "model_dir": None}
+_recording_source = None  # "hotkey" | "menu": who started the current recording
 shutdown_event = threading.Event()  # Set by any thread to request a clean exit
 # Transcription jobs are handed off to a worker so the keyboard hook thread
 # is never blocked by a multi-second Whisper run.
@@ -316,7 +322,10 @@ def output_text(text, mode: str, restore_clipboard: bool = False):
     with history_lock:
         transcript_history.append(text)
     if tray_icon:
-        tray_icon.menu = get_menu()
+        try:
+            tray_icon.update_menu()
+        except Exception:
+            log.debug("tray menu update failed", exc_info=True)
     
     prev_clip = None
     try:
@@ -335,11 +344,14 @@ def output_text(text, mode: str, restore_clipboard: bool = False):
             time.sleep(0.05)  # give the target app time to read the clipboard
             pyperclip.copy(prev_clip)
 
-def begin_recording():
+def begin_recording(source="hotkey"):
+    global _recording_source
     if is_recording.is_set():
         return
     drain_queue()           # clear any stale audio
+    _recording_source = source
     is_recording.set()
+    set_status("Recording...")
 
 def end_recording(settings):
     """Stop recording and queue the captured audio for transcription.
@@ -347,10 +359,23 @@ def end_recording(settings):
     Runs on the keyboard hook thread, so it must return quickly: no
     transcription happens here, only a hand-off to the worker.
     """
+    global _recording_source
     if not is_recording.is_set():
         return
     is_recording.clear()
+    _recording_source = None
+    set_status("Transcribing...")
     transcribe_q.put(settings)
+
+def toggle_recording():
+    """Tray menu action: start a recording, or stop the current one."""
+    settings = app_state["settings"]
+    if is_recording.is_set():
+        log.info("Transcribing...")
+        end_recording(settings)
+    elif settings is not None:
+        log.info("Recording...")
+        begin_recording(source="menu")
 
 def transcribe_worker():
     """Drain recordings and transcribe them one at a time."""
@@ -375,6 +400,9 @@ def transcribe_worker():
                 continue
             output_text(text, settings.mode, settings.restore_clipboard)
         finally:
+            log.debug("transcribe job done")
+            if not is_recording.is_set():
+                set_status("Ready")
             transcribe_q.task_done()
 
 # --- Keyboard handling for hold combo ---
@@ -398,11 +426,13 @@ def on_key_event(e, args):
         
         combo = _ctrl_down and _win_down
     
-    # Recording control (outside lock to avoid holding it during I/O)
+    # Recording control (outside lock to avoid holding it during I/O).
+    # A recording started from the tray menu is only stopped from the menu,
+    # otherwise any key release would end it.
     if combo and not is_recording.is_set():
         log.info("Recording...")
-        begin_recording()
-    elif not combo and is_recording.is_set():
+        begin_recording(source="hotkey")
+    elif not combo and is_recording.is_set() and _recording_source == "hotkey":
         log.info("Transcribing...")
         end_recording(args)
 
@@ -428,25 +458,122 @@ def create_tray_icon():
     draw.line([25, 58, 39, 58], fill='black', width=3)
     return img
 
+def recording_tray_icon(base: Image.Image) -> Image.Image:
+    """Base icon with a red dot in the corner, shown while recording."""
+    img = base.copy().convert("RGBA")
+    w, h = img.size
+    r = max(4, w // 3)
+    draw = ImageDraw.Draw(img)
+    draw.ellipse([w - r - 2, h - r - 2, w - 2, h - 2], fill=(220, 40, 40, 255), outline=(255, 255, 255, 255), width=max(1, w // 32))
+    return img
+
+_icons = {}  # "idle" / "recording" images, filled in by main()
+
+def set_status(status: str):
+    """Update status text, tray tooltip, icon and menu. Safe from any thread."""
+    app_state["status"] = status
+    if tray_icon is None:
+        return
+    try:
+        tray_icon.title = f"{APP_NAME} - {status}"
+        if _icons:
+            tray_icon.icon = _icons["recording" if status.startswith("Recording") else "idle"]
+        tray_icon.update_menu()
+    except Exception:
+        log.debug("tray update failed", exc_info=True)
+
+def status_line() -> str:
+    s = app_state["settings"]
+    if s is None:
+        return app_state["status"]
+    return f"{app_state['status']}  |  {s.model} on {app_state['device']}  |  {s.mode}"
+
 def copy_from_history(text):
     pyperclip.copy(text)
 
-def get_menu():
+def copy_last_transcript():
     with history_lock:
-        items = []
-        if transcript_history:
-            for i, text in enumerate(reversed(transcript_history)):
-                preview = (text[:50] + '...') if len(text) > 50 else text
-                items.append(pystray.MenuItem(preview, lambda _, t=text: copy_from_history(t)))
-            items.append(pystray.Menu.SEPARATOR)
+        text = transcript_history[-1] if transcript_history else None
+    if text:
+        pyperclip.copy(text)
+
+def open_path(p):
+    """Open a file or folder with the OS default handler."""
+    try:
+        p = Path(p)
+        if not p.exists():
+            p.parent.mkdir(parents=True, exist_ok=True)
+            if p.suffix:
+                p.touch()
+        if sys.platform == "win32":
+            os.startfile(str(p))
         else:
-            items.append(pystray.MenuItem('No history yet', lambda _: None, enabled=False))
-            items.append(pystray.Menu.SEPARATOR)
-        items.append(pystray.MenuItem(f"{APP_NAME} v{__version__} by {APP_AUTHOR}",
-                                      lambda _: webbrowser.open(APP_URL)))
-        items.append(pystray.Menu.SEPARATOR)
-        items.append(pystray.MenuItem('Exit', lambda _: stop_app()))
-        return pystray.Menu(*items)
+            import subprocess
+            subprocess.Popen(["open" if sys.platform == "darwin" else "xdg-open", str(p)])
+    except Exception:
+        log.warning("could not open %s", p, exc_info=log.isEnabledFor(logging.DEBUG))
+
+def open_tray_menu(icon):
+    """Left click on Windows: show the same popup menu as right click.
+
+    pystray only offers a 'default action' for left click, so we poke its
+    Win32 backend with a synthetic right-click. Other platforms open the menu
+    on left click by themselves.
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        from pystray._util import win32
+        icon._on_notify(0, win32.WM_RBUTTONUP)
+    except Exception:
+        log.debug("could not open tray menu", exc_info=True)
+
+def set_mode(mode: str):
+    s = app_state["settings"]
+    if s is not None:
+        s.mode = mode
+        log.info("Output mode: %s", mode)
+        set_status(app_state["status"])
+
+def menu_items():
+    """Built fresh every time the menu opens (pystray calls this on update_menu)."""
+    s = app_state["settings"]
+    with history_lock:
+        history = list(reversed(transcript_history))
+    yield pystray.MenuItem("open", open_tray_menu, default=True, visible=False)
+    yield pystray.MenuItem(status_line(), None, enabled=False)
+    yield pystray.Menu.SEPARATOR
+    yield pystray.MenuItem(lambda _: "Stop recording" if is_recording.is_set() else "Start recording",
+                           lambda: toggle_recording())
+    yield pystray.MenuItem("Copy last transcript", lambda: copy_last_transcript(), enabled=bool(history))
+    yield pystray.Menu.SEPARATOR
+    # Newest transcripts inline (click to copy), the rest in a submenu
+    def history_item(t):
+        return pystray.MenuItem((t[:50] + "...") if len(t) > 50 else t, lambda _, t=t: copy_from_history(t))
+    if history:
+        for t in history[:HISTORY_INLINE]:
+            yield history_item(t)
+    else:
+        yield pystray.MenuItem("No transcripts yet", None, enabled=False)
+    older = history[HISTORY_INLINE:]
+    if older:
+        yield pystray.MenuItem(f"Older ({len(older)})", pystray.Menu(*[history_item(t) for t in older]))
+    yield pystray.Menu.SEPARATOR
+    yield pystray.MenuItem("Output", pystray.Menu(
+        pystray.MenuItem("Paste into active window", lambda: set_mode("paste"), radio=True,
+                         checked=lambda _: s is not None and s.mode == "paste"),
+        pystray.MenuItem("Clipboard only", lambda: set_mode("clipboard"), radio=True,
+                         checked=lambda _: s is not None and s.mode == "clipboard"),
+    ))
+    yield pystray.MenuItem("Open log file", lambda: open_path(log_file_path()))
+    yield pystray.MenuItem("Open models folder", lambda: open_path(app_state["model_dir"]),
+                           enabled=app_state["model_dir"] is not None)
+    yield pystray.Menu.SEPARATOR
+    yield pystray.MenuItem(f"{APP_NAME} v{__version__} by {APP_AUTHOR}", lambda: webbrowser.open(APP_URL))
+    yield pystray.MenuItem("Exit", lambda: stop_app())
+
+def get_menu():
+    return pystray.Menu(menu_items)
 
 def stop_app():
     """Request a clean shutdown.
@@ -540,8 +667,10 @@ def main():
     # thread, so pystray owns the main thread there and we block on keyboard
     # events from a helper thread instead. Elsewhere the tray runs in its own
     # thread and the main thread blocks.
+    app_state.update(settings=args, device=device, model_dir=model_dir, status="Ready")
     icon_image = create_tray_icon()
-    tray_icon = pystray.Icon(EXE_NAME, icon_image, f"{APP_NAME} - {APP_AUTHOR}", menu=get_menu())
+    _icons.update(idle=icon_image, recording=recording_tray_icon(icon_image))
+    tray_icon = pystray.Icon(EXE_NAME, icon_image, f"{APP_NAME} - Ready", menu=get_menu())
 
     log.info("Ready. Hold %s to record.", hotkey)
 
