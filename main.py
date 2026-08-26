@@ -53,7 +53,7 @@ import webbrowser
 from faster_whisper import WhisperModel
 from platformdirs import user_data_dir
 
-__version__ = "1.0.1"
+__version__ = "1.0.2"
 APP_NAME = "Whisper STT"
 APP_AUTHOR = "Devexus"
 APP_URL = "https://devexus.net"
