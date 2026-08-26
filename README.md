@@ -4,7 +4,7 @@
 
 A simple offline speech-to-text application using faster-whisper. Runs completely locally. Hold **CTRL + WINDOWS** (or **CTRL + CMD** on Mac) to record, release to transcribe instantly. Text is automatically pasted where your cursor is (paste mode) or simply copied to clipboard (clipboard mode).
 
-**Version:** 1.0.1
+**Version:** 1.0.2
 
 ## Features
 
