@@ -6,3 +6,4 @@ pyperclip>=1.8,<2
 pyautogui>=0.9.54,<1
 pystray>=0.19,<1
 pillow>=10,<12
+platformdirs>=4,<5
