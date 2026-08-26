@@ -188,7 +188,7 @@ def transcribe_array(m, audio, language):
     
     segments, info = m.transcribe(
         audio,
-        beam_size=10,  # Better accuracy
+        beam_size=5,  # faster-whisper default; 10 is ~2x slower on CPU with no real gain on short clips
         vad_filter=False,  # Disable since we're doing manual VAD
         language=language,
         condition_on_previous_text=False,  # Better for short clips
