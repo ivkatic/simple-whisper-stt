@@ -14,6 +14,7 @@ for pkg in ["ctranslate2", "faster_whisper"]:
     d, b, h = collect_all(pkg)
     datas += d; binaries += b; hiddenimports += h
 datas += collect_data_files("sounddevice")  # portaudio dll lives in _sounddevice_data
+datas += [("assets/logo.png", "assets")]      # tray icon
 
 excludes = ["tkinter", "matplotlib", "IPython", "notebook"]
 if CUDA:
