@@ -42,6 +42,7 @@ _add_nvidia_bins_to_path()
 # ---- END: NVIDIA DLL PATH FIX ----
 
 import argparse
+import logging
 import queue
 import threading
 import numpy as np
@@ -59,6 +60,16 @@ from faster_whisper import WhisperModel
 from platformdirs import user_data_dir
 
 __version__ = "1.0.1"
+
+log = logging.getLogger("whisper_stt")
+
+def setup_logging(debug: bool):
+    """INFO to stdout by default; --debug adds DEBUG and re-enables warnings."""
+    level = logging.DEBUG if debug else logging.INFO
+    fmt = "%(asctime)s %(levelname)s %(message)s" if debug else "%(message)s"
+    logging.basicConfig(level=level, format=fmt, datefmt="%H:%M:%S", stream=sys.stdout)
+    if debug:
+        warnings.filterwarnings("default")
 
 def is_cuda_available():
     """Check if CUDA is available for faster-whisper (uses CTranslate2, not PyTorch)."""
@@ -117,8 +128,7 @@ def init_audio():
 
 def audio_callback(indata, frames, time_info, status):
     if status:
-        # print(status, file=sys.stderr)
-        pass
+        log.debug("audio callback status: %s", status)
     if is_recording.is_set():
         recording_q.put(indata.copy())
 
@@ -137,7 +147,7 @@ def stop_stream():
             stream.stop()
             stream.close()
         except Exception:
-            pass
+            log.debug("closing audio stream failed", exc_info=True)
         stream = None
 
 def drain_queue():
@@ -206,7 +216,7 @@ def make_model(device: str, model_name: str, cache_dir: Path):
         try:
             return WhisperModel(model_name, device="cuda", compute_type="float16", download_root=str(cache_dir))
         except Exception:
-            print("[Warning] CUDA failed, falling back to CPU", file=sys.stderr)
+            log.warning("CUDA failed, falling back to CPU", exc_info=log.isEnabledFor(logging.DEBUG))
             return WhisperModel(model_name, device="cpu", compute_type="int8", download_root=str(cache_dir))
     else:
         # CPU-friendly quantization
@@ -240,6 +250,7 @@ def output_text(text, mode: str, restore_clipboard: bool = False):
     try:
         prev_clip = pyperclip.paste()
     except Exception:
+        log.debug("could not read clipboard", exc_info=True)
         prev_clip = None
 
     # Always copy transcript first so clipboard ends with it by default
@@ -288,7 +299,7 @@ def transcribe_worker():
             try:
                 text = transcribe_array(model, audio, settings.lang, settings.beam_size)
             except Exception as ex:
-                print(f"[Transcribe error] {ex}", file=sys.stderr)
+                log.error("Transcribe error: %s", ex, exc_info=log.isEnabledFor(logging.DEBUG))
                 continue
             output_text(text, settings.mode, settings.restore_clipboard)
         finally:
@@ -304,8 +315,7 @@ def on_key_event(e, args):
     # Normalize name
     name = (e.name or "").lower()
     
-    # Debug: uncomment to see what keys are detected
-    # print(f"Key: {name} ({e.event_type})", file=sys.stderr)
+    log.debug("key %s %s", name, e.event_type)
     
     # Thread-safe key state updates
     with _key_state_lock:
@@ -318,10 +328,10 @@ def on_key_event(e, args):
     
     # Recording control (outside lock to avoid holding it during I/O)
     if combo and not is_recording.is_set():
-        # print("[Recording started]", file=sys.stderr)
+        log.info("Recording...")
         begin_recording()
     elif not combo and is_recording.is_set():
-        print("[Recording stopped, transcribing...]", file=sys.stderr)
+        log.info("Transcribing...")
         end_recording(args)
 
 def create_tray_icon():
@@ -385,9 +395,7 @@ def main():
     if args.min_duration < 0 or args.silence_thresh < 0 or args.beam_size < 1:
         parser.error("--min-duration and --silence-thresh must be >= 0, --beam-size >= 1")
     
-    # Re-enable warnings if debug mode is enabled
-    if args.debug:
-        warnings.filterwarnings("default")
+    setup_logging(args.debug)
     
     global tray_icon, keyboard_hook
     
@@ -395,13 +403,13 @@ def main():
     try:
         validate_model_name(args.model)
     except ValueError as e:
-        print(f"[Error] {e}", file=sys.stderr)
+        log.error("%s", e)
         sys.exit(1)
 
     # The `keyboard` package needs a global hook; on Linux/macOS that requires root.
     if sys.platform != "win32" and hasattr(os, "geteuid") and os.geteuid() != 0:
-        print("[Error] Global keyboard hooks require root on Linux/macOS. "
-              "Re-run with sudo (e.g. `sudo python main.py`).", file=sys.stderr)
+        log.error("Global keyboard hooks require root on Linux/macOS. "
+                  "Re-run with sudo (e.g. `sudo python main.py`).")
         sys.exit(1)
 
     # Resolve device
@@ -410,28 +418,28 @@ def main():
     else:
         device = "cuda" if is_cuda_available() else "cpu"
         if device == "cpu":
-            print("[Info] CUDA not available, using CPU")
+            log.info("CUDA not available, using CPU")
 
     hotkey = "CTRL + CMD" if sys.platform == "darwin" else "CTRL + WINDOWS"
-    print(f"Whisper PTT v{__version__} running.")
-    print(f"- Hold {hotkey} to talk; release to transcribe.")
-    print(f"- Model: {args.model} | Device: {device} | Mode: {args.mode} | Lang: {args.lang or 'auto'}")
+    log.info("Whisper PTT v%s running.", __version__)
+    log.info("- Hold %s to talk; release to transcribe.", hotkey)
+    log.info("- Model: %s | Device: %s | Mode: %s | Lang: %s", args.model, device, args.mode, args.lang or "auto")
     model_dir = resolve_model_dir(args.model_dir)
-    print(f"- Model dir: {model_dir}")
+    log.info("- Model dir: %s", model_dir)
 
     try:
         init_audio()
         start_stream()
     except Exception as ex:
-        print(f"[Audio error] {ex}", file=sys.stderr)
+        log.error("Audio error: %s", ex, exc_info=args.debug)
         sys.exit(1)
 
     try:
-        print("[Loading Whisper model] First run may take a bit...")
+        log.info("Loading Whisper model, first run may take a bit...")
         global model
         model = make_model(device, args.model, model_dir)
     except Exception as ex:
-        print(f"[Model load error] {ex}", file=sys.stderr)
+        log.error("Model load error: %s", ex, exc_info=args.debug)
         stop_stream()
         sys.exit(1)
 
@@ -450,7 +458,7 @@ def main():
     icon_image = create_tray_icon()
     tray_icon = pystray.Icon("whisper_ptt", icon_image, "Whisper PTT", menu=get_menu())
 
-    print(f"[Ready] Model loaded. Hold {hotkey} to record.")
+    log.info("Ready. Hold %s to record.", hotkey)
 
     def cleanup():
         transcribe_q.put(None)  # tell the worker to stop
@@ -458,15 +466,15 @@ def main():
             try:
                 keyboard.unhook(keyboard_hook)
             except Exception:
-                pass
+                log.debug("unhooking keyboard failed", exc_info=True)
         stop_stream()
-        print("Goodbye.")
+        log.info("Goodbye.")
 
     def stop_tray():
         try:
             tray_icon.stop()
         except Exception:
-            pass
+            log.debug("stopping tray failed", exc_info=True)
 
     if sys.platform == "darwin":
         # Tray owns the main thread. A helper waits for the shutdown request

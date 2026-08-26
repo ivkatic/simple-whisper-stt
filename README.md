@@ -74,7 +74,7 @@ python main.py --lang en                # Force English
 - `--beam-size <n>` - Whisper beam size, higher is slower (default: 5)
 - `--restore-clipboard` - In paste mode, restore the previous clipboard content after pasting
 - `--version` - Show version number and exit
-- `--debug` - Show warnings (warnings are suppressed by default)
+- `--debug` - Debug logging (key events, tracebacks) and library warnings; off by default
 
 The app automatically detects CUDA availability and falls back to CPU on non-NVIDIA systems.
 
