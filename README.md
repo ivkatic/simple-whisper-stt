@@ -38,7 +38,7 @@ source venv/bin/activate
 
 **Install dependencies:**
 ```bash
-pip install faster-whisper sounddevice keyboard pyperclip pyautogui pystray pillow numpy
+pip install -r requirements.txt
 ```
 
 **For GPU support:**
