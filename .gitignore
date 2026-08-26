@@ -34,3 +34,6 @@ desktop.ini
 # Logs
 *.log
 
+
+# Build output
+assets/icon.ico

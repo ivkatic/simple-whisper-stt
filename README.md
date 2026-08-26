@@ -78,6 +78,19 @@ python main.py --lang en                # Force English
 
 The app automatically detects CUDA availability and falls back to CPU on non-NVIDIA systems.
 
+## Building a standalone exe (Windows)
+
+```bash
+pip install -r requirements.txt "pyinstaller>=6,<7"
+python build_tools/make_icon.py
+python build_tools/make_version_info.py
+python -m PyInstaller whisper-stt-devexus.spec
+```
+
+Output is `dist/whisper-stt-devexus/` (~250 MB, CPU only). Run `whisper-stt-devexus.exe` with the same flags as `main.py`. Models are downloaded to the per-user data dir (see below). Set `WHISPER_STT_BUILD_CUDA=1` before building to bundle the CUDA libraries (adds ~1.6 GB).
+
+Tagging `v*` runs the same build in GitHub Actions and attaches the zip to the release.
+
 ## Where models are stored
 
 Models (~75 MB for `tiny` up to ~3 GB for `large-v3`) are downloaded once and cached. Location, in order of precedence:

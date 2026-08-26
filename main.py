@@ -60,6 +60,10 @@ from faster_whisper import WhisperModel
 from platformdirs import user_data_dir
 
 __version__ = "1.0.1"
+APP_NAME = "Whisper PTT"
+APP_AUTHOR = "Devexus"
+APP_URL = "https://devexus.net"
+EXE_NAME = "whisper-stt-devexus"
 
 log = logging.getLogger("whisper_stt")
 
@@ -70,6 +74,9 @@ def setup_logging(debug: bool):
     logging.basicConfig(level=level, format=fmt, datefmt="%H:%M:%S", stream=sys.stdout)
     if debug:
         warnings.filterwarnings("default")
+    # Keep --debug about this app, not library internals
+    for noisy in ("PIL", "urllib3", "huggingface_hub", "filelock"):
+        logging.getLogger(noisy).setLevel(logging.INFO)
 
 def is_cuda_available():
     """Check if CUDA is available for faster-whisper (uses CTranslate2, not PyTorch)."""
@@ -202,7 +209,7 @@ def resolve_model_dir(cli_value=None) -> Path:
         legacy = Path(__file__).resolve().parent / "hf_cache"
         if legacy.is_dir():
             return legacy
-    return Path(user_data_dir("WhisperSTT", "Devexus")) / "models"
+    return Path(user_data_dir("WhisperSTT", APP_AUTHOR)) / "models"
 
 def make_model(device: str, model_name: str, cache_dir: Path):
     """
@@ -371,7 +378,7 @@ def stop_app():
     shutdown_event.set()
 
 def main():
-    parser = argparse.ArgumentParser(description=f"Whisper Push-To-Talk v{__version__}")
+    parser = argparse.ArgumentParser(prog=EXE_NAME, description=f"{APP_NAME} v{__version__}")
     parser.add_argument("--model", default="small", help="Whisper model (tiny|base|small|medium|large-v3...)")
     parser.add_argument("--cpu", action="store_true", help="Force CPU usage (default: auto-detect GPU)")
     parser.add_argument("--mode", choices=["paste", "clipboard"], default="paste",
@@ -421,7 +428,7 @@ def main():
             log.info("CUDA not available, using CPU")
 
     hotkey = "CTRL + CMD" if sys.platform == "darwin" else "CTRL + WINDOWS"
-    log.info("Whisper PTT v%s running.", __version__)
+    log.info("%s v%s running.", APP_NAME, __version__)
     log.info("- Hold %s to talk; release to transcribe.", hotkey)
     log.info("- Model: %s | Device: %s | Mode: %s | Lang: %s", args.model, device, args.mode, args.lang or "auto")
     model_dir = resolve_model_dir(args.model_dir)
@@ -456,7 +463,7 @@ def main():
     # events from a helper thread instead. Elsewhere the tray runs in its own
     # thread and the main thread blocks.
     icon_image = create_tray_icon()
-    tray_icon = pystray.Icon("whisper_ptt", icon_image, "Whisper PTT", menu=get_menu())
+    tray_icon = pystray.Icon(EXE_NAME, icon_image, APP_NAME, menu=get_menu())
 
     log.info("Ready. Hold %s to record.", hotkey)
 
