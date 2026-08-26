@@ -57,7 +57,7 @@ import pystray
 
 from faster_whisper import WhisperModel
 
-__version__ = "1.0.0"
+__version__ = "1.0.1"
 
 def is_cuda_available():
     """Check if CUDA is available for faster-whisper (uses CTranslate2, not PyTorch)."""
