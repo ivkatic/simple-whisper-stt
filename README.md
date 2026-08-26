@@ -67,10 +67,25 @@ python main.py --lang en                # Force English
 - `--cpu` - Force CPU usage (default: auto-detect GPU, fallback to CPU)
 - `--mode <paste|clipboard>` - Output behavior (default: paste)
 - `--lang <code>` - Force language code like "en" or "hr" (default: auto-detect)
+- `--model-dir <path>` - Where models are downloaded/loaded (see below)
 - `--version` - Show version number and exit
 - `--debug` - Show warnings (warnings are suppressed by default)
 
 The app automatically detects CUDA availability and falls back to CPU on non-NVIDIA systems.
+
+## Where models are stored
+
+Models (~75 MB for `tiny` up to ~3 GB for `large-v3`) are downloaded once and cached. Location, in order of precedence:
+
+1. `--model-dir <path>`
+2. `WHISPER_STT_MODEL_DIR` environment variable
+3. `hf_cache/` next to `main.py`, if that folder already exists (running from source)
+4. Per-user data dir:
+   - Windows: `%LOCALAPPDATA%\Devexus\WhisperSTT\models`
+   - macOS: `~/Library/Application Support/WhisperSTT/models`
+   - Linux: `~/.local/share/WhisperSTT/models`
+
+The path in use is printed at startup.
 
 ## How It Works
 

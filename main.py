@@ -56,6 +56,7 @@ from PIL import Image, ImageDraw
 import pystray
 
 from faster_whisper import WhisperModel
+from platformdirs import user_data_dir
 
 __version__ = "1.0.1"
 
@@ -165,14 +166,42 @@ def trim_silence(audio, thresh=SILENCE_THRESH):
     end = min(idx[-1] + int(0.02 * SAMPLE_RATE), len(audio))
     return audio[start:end]
 
-def make_model(device: str, model_name: str):
+MODEL_DIR_ENV = "WHISPER_STT_MODEL_DIR"
+
+def resolve_model_dir(cli_value=None) -> Path:
+    """Pick where Whisper models are stored/downloaded.
+
+    Precedence:
+      1. --model-dir
+      2. $WHISPER_STT_MODEL_DIR
+      3. ./hf_cache next to main.py, if it already exists (running from source)
+      4. per-user data dir (platformdirs), e.g.
+           Windows: %LOCALAPPDATA%/Devexus/WhisperSTT/models
+           macOS:   ~/Library/Application Support/WhisperSTT/models
+           Linux:   ~/.local/share/WhisperSTT/models
+
+    A frozen exe (PyInstaller onefile) extracts to a temp dir, so anything
+    derived from __file__ would be wiped on exit; that's why 3 only applies
+    when the folder already exists and we're not frozen.
+    """
+    if cli_value:
+        return Path(cli_value).expanduser()
+    env = os.environ.get(MODEL_DIR_ENV)
+    if env:
+        return Path(env).expanduser()
+    if not getattr(sys, "frozen", False):
+        legacy = Path(__file__).resolve().parent / "hf_cache"
+        if legacy.is_dir():
+            return legacy
+    return Path(user_data_dir("WhisperSTT", "Devexus")) / "models"
+
+def make_model(device: str, model_name: str, cache_dir: Path):
     """
     device: 'cpu' | 'cuda'
+    cache_dir: where models are downloaded to / loaded from
     """
-    # Use local cache folder
-    cache_dir = Path(__file__).parent / "hf_cache"
-    cache_dir.mkdir(exist_ok=True)
-    
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
     if device == "cuda":
         # Try CUDA first, fallback to CPU if it fails
         try:
@@ -338,6 +367,8 @@ def main():
     parser.add_argument("--mode", choices=["paste", "clipboard"], default="paste",
                         help="Output mode (default: paste)")
     parser.add_argument("--lang", default=None, help='Force language like "en" or "hr" (default: auto)')
+    parser.add_argument("--model-dir", default=None,
+                        help=f"Where to store/load models (default: ${MODEL_DIR_ENV}, ./hf_cache if present, else per-user data dir)")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument("--debug", action="store_true", help="Show warnings and debug output")
     args = parser.parse_args()
@@ -373,6 +404,8 @@ def main():
     print(f"Whisper PTT v{__version__} running.")
     print(f"- Hold {hotkey} to talk; release to transcribe.")
     print(f"- Model: {args.model} | Device: {device} | Mode: {args.mode} | Lang: {args.lang or 'auto'}")
+    model_dir = resolve_model_dir(args.model_dir)
+    print(f"- Model dir: {model_dir}")
 
     try:
         init_audio()
@@ -384,7 +417,7 @@ def main():
     try:
         print("[Loading Whisper model] First run may take a bit...")
         global model
-        model = make_model(device, args.model)
+        model = make_model(device, args.model, model_dir)
     except Exception as ex:
         print(f"[Model load error] {ex}", file=sys.stderr)
         stop_stream()
