@@ -38,7 +38,7 @@ exe = EXE(
     pyz, a.scripts, [],
     exclude_binaries=True,
     name=EXE_NAME,
-    console=True,           # keeps the log output visible; tray still works
+    console=False,          # tray only; main.py attaches to the parent terminal if run from one
     icon="assets/icon.ico" if sys.platform == "win32" else None,
     version="build/version_info.txt" if sys.platform == "win32" else None,
 )

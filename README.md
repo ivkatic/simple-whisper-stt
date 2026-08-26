@@ -89,7 +89,7 @@ python build_tools/make_version_info.py
 python -m PyInstaller whisper-stt-devexus.spec
 ```
 
-Output is `dist/whisper-stt-devexus/` (~250 MB, CPU only). Run `whisper-stt-devexus.exe` with the same flags as `main.py`. Models are downloaded to the per-user data dir (see below). Set `WHISPER_STT_BUILD_CUDA=1` before building to bundle the CUDA libraries (adds ~1.6 GB).
+Output is `dist/whisper-stt-devexus/` (~250 MB, CPU only). Run `whisper-stt-devexus.exe` with the same flags as `main.py`. The exe has no console window: double-click it and only the tray icon appears; run it from cmd/PowerShell and the output shows up there. Startup errors pop a message box. Models are downloaded to the per-user data dir (see below). Set `WHISPER_STT_BUILD_CUDA=1` before building to bundle the CUDA libraries (adds ~1.6 GB).
 
 Tagging `v*` runs the same build in GitHub Actions and attaches the zip to the release.
 
@@ -106,6 +106,16 @@ Models (~75 MB for `tiny` up to ~3 GB for `large-v3`) are downloaded once and ca
    - Linux: `~/.local/share/WhisperSTT/models`
 
 The path in use is printed at startup.
+
+## Logs
+
+Everything printed to the console is also written to a rotating log file (1 MB x 4), useful for the exe which has no console:
+
+- Windows: `%LOCALAPPDATA%\Devexus\WhisperSTT\Logs\whisper-stt.log`
+- macOS: `~/Library/Logs/WhisperSTT/whisper-stt.log`
+- Linux: `~/.local/state/WhisperSTT/log/whisper-stt.log`
+
+`--debug` raises the level to DEBUG for both outputs. The path is printed at startup.
 
 ## How It Works
 
@@ -142,44 +152,3 @@ For example, to use **ALT + SPACE**:
 - **Windows**: No special privileges needed
 - **Mac**: System preferences may require allowing Terminal/Python to control the computer
 
-## Building Executable (.exe)
-
-To create a standalone executable (Windows):
-
-1. Install PyInstaller:
-```bash
-pip install pyinstaller
-```
-
-2. Build the executable:
-```bash
-pyinstaller --onefile --windowed --name WhisperSpeechToText main.py
-```
-
-3. Find the executable in the `dist/` folder
-
-**Build Options:**
-- `--onefile` - Creates a single .exe file
-- `--windowed` - Hides console window (use `--console` if you want to see debug output)
-- `--name` - Custom name for the executable
-- `--icon=icon.ico` - Add custom icon (optional)
-
-**Customizing Default Settings:**
-
-You can still pass arguments to the .exe after building:
-```bash
-WhisperSpeechToText.exe --model medium --cpu
-```
-
-Or change defaults before building by editing `main.py` (around line 284):
-```python
-parser.add_argument("--model", default="medium", help=...)  # Change from "small"
-parser.add_argument("--cpu", action="store_true", default=True, help=...)  # Force CPU
-parser.add_argument("--mode", default="clipboard", help=...)  # Change from "paste"
-```
-
-**Note:** The first run will download the Whisper model (~500MB for small model), which may take time.
-
----
-
-Built by [Devexus](https://devexus.net).
